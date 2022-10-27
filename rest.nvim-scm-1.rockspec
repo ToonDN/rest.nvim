@@ -1,3 +1,5 @@
+---@diagnostic disable
+
 local MAJOR, REV = "scm", "-1"
 rockspec_format = "3.0"
 package = "rest.nvim"
