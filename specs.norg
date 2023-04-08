@@ -1,0 +1,313 @@
+@document.meta
+title: specs
+description: rest.nvim plugin specifications
+authors: NTBBloodbath
+categories: [
+  cURL
+  HTTP
+  Neovim
+  plugin
+  rest client
+]
+created: 2023-04-08
+updated: 2023-04-08
+version: 1.0.0
+@end
+
+#comment
+Use `:Neorg toc split` to open a Table of Contents and `q` to close it.
+Press `CR` in any ToC header to navigate between them.
+
+.TOC
+
+* Specifications
+  This document details rest.nvim Neovim plugin specifications, including design choices. This
+  document also describes some important information for contributors and end users.
+
+  This is a technical document; however, it does contain examples and it is pretty easy to
+  understand. This is not a final revision of the document, feel free to open a Pull Request in
+  case you find something that you think that can be improved.
+
+  > These specifications cover *only* rest.nvim incremental codebase rewrite as there are no
+    specifications or design choices behind the old codebase at all.
+
+  *Note*: this document targets /incoming/ rest.nvim version (v0.2) onwards.
+
+
+** Versioning
+   rest.nvim follows [ZeroVer]{https://0ver.org/}. That means, accordingly to ZeroVer zen:
+
+   > Your software's major version should never exceed the first and most important number in
+     computing: zero.
+
+   That means rest.nvim is *not* going to reach version 1.0 as ZeroVer does state that the software
+   major version should be zero. However, this does not mean rest.nvim is not stable, some other
+   projects like React Native also follow ZeroVer.
+
+** Design
+*** Choices
+    - rest.nvim should work out-of-the-box whenever possible, however, we might /optionally/
+      require some system-wide dependencies in order to get the best experience while using it in
+      our daily basis.
+    - rest.nvim should use tree-sitter HTTP parser as a first-class citizen whenever possible to
+      parse HTTP documents.
+    - rest.nvim should provide a compatibility layer with most popular HTTP clients from other
+      code editors (e.g. `rest.el` and VSCode rest client).
+    - rest.nvim should be extensible and hackable by default, that means, user should be capable
+      of using any HTTP client under the hood instead of forcing him to use cURL (via Lua-cURL).
+
+*** Principles
+    - *Readability over complexity*. rest.nvim source code must be understandable by anyone, no
+      matters their experience with Lua, Tree-Sitter or cURL.
+    - *Extensibility*. rest.nvim source code must be extensible. Everything can be easily modified
+      by the end user through a `setup` function.
+    - *Understandability*. Documentation as a first-class citizen, any contributor and user should
+      be able to completely understand how does rest.nvim works and WHY does it work the way it
+      works.
+
+** API
+   By default, rest.nvim is going to use a Lua rock called `Lua-cURL` to get work done. Hence why
+   `rest.nvim` will modify your Lua `package.path` and `package.cpath` values to be able to find
+   your user-installed rocks!
+
+   Lua-cURL provides Lua bindings to `libcurl`. This may suppose a problem if the end user does not
+   have development headers of libcurl installed. This is one of the reasons why it /is/ an
+   optional dependency despite cURL being a first-class citizen.
+
+   Thanks to this potential issue, rest.nvim is going to also support another HTTP clients and
+   implementations /that we are going to call third-party clients/ in this document.
+
+*** Tree-Sitter data
+    rest.nvim will contain a `rest-nvim.parser` Lua module. This module is going to handle all the
+    HTTP documents parsing logic. That means, `rest-nvim.parser` task is to extract the information
+    of the current request under the cursor or /all/ the requests in the HTTP document, as
+    requested by the add-on or the end user. The extracted information is the following:
+    - Request method and URL (e.g. `POST http://localhost:8080/api/v1/user/create`).
+    - Headers
+    - Body
+
+    Note that not everything can be directly handled by tree-sitter. For example, document
+    variables (`@url = http://localhost:8080`) and their expansion. This is why rest.nvim also
+    help tree-sitter to parse the HTTP document by using some utility functions.
+
+    Extracted information is returned by `rest-nvim.parser` as a structured Lua table, here is an
+    example:
+
+    > HTTP document
+    @code http
+    @API_PATH = api/v1
+
+    POST http://localhost:8080/{{API_PATH}}/users/create
+    Content-Type: application/json
+
+    {
+      "email": "JohnDoe@testmail.xyz",
+      "username": "JohnDoe25",
+      "password": "3ncryptEd_p@s2w0rd"
+    }
+    @end
+
+    > `rest-nvim.parser` output
+    @code lua
+    {
+      { -- This is an array that holds all the requests that are going to be tested
+        request = {
+          method = "POST",
+          url = "http://localhost:8080/api/v1/users/create",
+        },
+        headers = {
+          ["Content-Type"] = "application/json",
+        },
+        body = {
+          email = "JohnDoe@testmail.xyz",
+          username = "JohnDoe25",
+          password = "3ncryptEd_p@s2w0rd",
+        },
+      },
+    }
+    @end
+
+    Please note how `rest-nvim.parser` automatically expanded document variables and returns only
+    what the HTTP client needs in order to make the HTTP request.
+
+    Also in case of parsing whole file with multiple requests, `rest-nvim.parser` will return a
+    table with nested tables (array of tables) where `parsed_document[1]` is the first request and
+    so on. Each nested table has exactly the same structure as the example output table above.
+
+*** Rest command
+    As we mentioned before, rest.nvim does expose a Neovim command called `:Rest`. This command is
+    a simple /yet powerful/ wrapper around the HTTP client that rest.nvim is currently using (e.g.
+    `postman` or `cURL`).
+
+    This command works with subcommands (aka actions), and some of them work with additional
+    /optional/ flags like *nix terminal utilities (e.g. `wc -l`). You can complete these actions by
+    pressing `<TAB>` and these actions are the following:
+    ~ `run`
+    ~~ `--all` - Run all requests found in the current HTTP document.
+    ~~ `--last` - Re-run last executed request.
+    ~ `last` (alias to `run --last` to retain backwards compatibility with old keybinds)
+    ~ `preview`
+
+**** Functions
+     As `:Rest` command is a wrapper around current HTTP client, it does require some functions to
+     be exposed by each third-party client `init.lua` module. We did explain this topic a bit
+     before, so we are just going to detail what these functions does in order to be able to
+     implement them.
+
+***** exec
+      Execute or `preview` one or several HTTP requests depending on given `scope` and return
+      request(s) results in a table that will be used to render results in a buffer.
+
+      *Arguments*:
+      - `scope: string`
+      -- Defines the request execution scope. Can be: `last`, `cursor`, `document`
+      - `preview: boolean`
+      -- Whether execute the request or just preview the command that is going to be ran.
+
+      *Returns*:
+      - `table`
+      -- Request results (HTTP client output)
+
+*** Third-party clients
+    As we mentioned in [API]{** API} section, rest.nvim is going to provide an API to interact
+    with third-party add-ons, written by rest-nvim community. You can think of it like something
+    similar to `nvim-cmp` completion sources.
+
+    You can check out [#144]{https://github.com/rest-nvim/rest.nvim/issues/144} for more context
+    about the initial discussion for the implementation of third-party clients integration.
+
+    This API is going to be built-in in rest.nvim source code. As an example, let's suppose that we
+    are adding support for official postman CLI:
+
+    We are going to add `rest-nvim/rest-postman` repository as a rest.nvim dependency, where
+    `rest-postman` add-on has the following structure:
+    @code
+    lua/
+    └── rest-nvim/          # Root rest-nvim module directory
+       └── add-ons/         # Add-ons directory so we can require("rest-nvim.add-ons.foo")
+          └── postman/      # Postman CLI add-on module directory
+             ├── init.lua   # Postman CLI add-on module init file
+             └── utils.lua  # Postman CLI add-on module utilities file
+    @end
+
+    We can see that it does have a standard structure (`rest-nvim/add-ons/client-name`), this is
+    essential as rest.nvim will look for an `add-ons` module named like the third-party client
+    specified in the user `setup` function.
+
+    An add-on can internally contain any files additionally to the mandatory `init.lua` file, as we
+    can see in the example.
+
+    Add-ons will also work with data extracted from HTTP documents by rest.nvim core parser, that
+    means add-ons are going to directly work with tree-sitter data. That way, add-ons maintainers
+    will only need to care about integrating the request data (request method and URL, headers,
+    body, etc) in the third-party client arguments when running it.
+
+    An user will be able to choose what third-party client he wants to use by installing add-ons
+    and then choosing the add-on on his rest.nvim `setup` function like this:
+
+    @code lua
+    require("rest-nvim").setup({
+      client = "postman",  -- default is "curl"
+    })
+    @end
+
+    This way we keep things simple for end users and rest.nvim codebase, everything should work
+    automatically!
+
+**** Third-party clients init file
+     As we already know, an `init.lua` file is mandatory for rest.nvim add-ons ad it does handle the
+     Lua module initialization and how it behaves. However, do we already know what should that
+     `init.lua` file contain /and return/ to rest.nvim when we require it? Well, this is what we are
+     going to learn now.
+
+     As you may know, rest.nvim does expose commands to Neovim (e.g. `:Rest run`) that triggers
+     different actions like running request under the cursor, preview a request, etc. All
+     third-party clients integration should keep an standard with the built-in cURL integration.
+     That means, add-ons /must/ return several functions like `run` and `preview` as these functions
+     are called during `:Rest` command execution.
+
+     At the moment of writing this section, integrations should return the following functions:
+     - `exec(scope: string, preview: boolean) -> table`
+     -- Execute or `preview` one or several HTTP requests depending on given `scope` and return
+        request(s) results in a table that will be used to render results in a buffer.
+
+** Implementation
+   Now that we talked about rest.nvim APIs, it is time to actually talk about the implementation of
+   such APIs. First of all, these APIs implementation has a specific order that we must follow in
+   order to get work done.
+
+*** Parser
+    Parsing HTTP documents is something like rest.nvim heart and brain, it does nothing without
+    parsing them. This is where we implement what [Tree-Sitter data section]{*** Tree-Sitter data}
+    does.
+
+    Right so we would usually think something like "we need to make a parser here", and that is
+    accurate; however, we already got a core Tree-Sitter parser for our HTTP documents. Sadly this
+    is not enough for us, but why?
+
+    This is due to what we already explained in such section. Basically rest.nvim is capable of
+    handle any kind of variable and expand it (document-scoped, environment, etc). This is something
+    that tree-sitter *cannot directly do* so we need to make what I like to call a *layer* on top of
+    our HTTP parser.
+
+    This layer is responsible for /doing/ the dirty work that the tree-sitter parser cannot do by
+    itself due to its nature. What is this dirty work, just reading /and expanding/ variables in the
+    document requests? Not really, it does much more than just that.
+
+**** Variables
+     As we may know, our tree-sitter parser should be capable of understanding what a variable is
+     and its scope so we can help our parser to expand it later so we can actually use the value it
+     holds.
+
+     These variables can have different scopes that *not* only depends on the parser and we /must/
+     also scan some external files (e.g. `.env`) in order to find their values!
+
+     So we can say that variable rules are the following:
+     ~ Document-scoped variables
+     ~~ Variables that are declared /directly/ in our HTTP document (`@API_PATH = api/v1`).
+     ~ Environment variables
+     ~~ System-wide /or shell session/ variables (e.g. `$HOME`).
+     ~~ Variables coming from an environment file (e.g. `.env`).
+     ~ Dynamic variables
+     ~~ Special rest.nvim variables like `uuid` that gets evaluated on requests execution.
+
+**** External bodies
+     Our HTTP documents can contain references to external JSON files (`< ./user.json`) that will be
+     used as the request body. Tree-sitter is capable of understanding what external bodies are,
+     however it does not know how to use them.
+
+     The layer is going to grab the JSON file location from tree-sitter then load it as a Lua table
+     and add it to `rest-nvim.parser` output table.
+
+
+* Contributing
+** rest.nvim
+   There is nothing special here; however, we highly encourage you to work with the following
+   coding style in order to keep codebase consistency and also the following contribution workflow
+   in order to be more organized:
+
+*** Coding style
+    There is an `.editorconfig` in the root of rest.nvim repository, everything should be
+    automatically set thanks to built-in Neovim `.editorconfig` support available in `>= 0.9`
+    release. Otherwise you will need to use an editorconfig plugin of your choice.
+
+    There is also a stylua configuration file in case you want to use stylua formatter after you
+    are done with your changes to the codebase.
+
+    Our coding style conventions are the following (handled by stylua):
+    - 2 spaces indentation
+    - spaces over tabs
+    - double quotes over single quotes
+    - 100 characters as the maximum line length
+
+*** Workflow
+    This is not mandatory, however, it does bring organization and a better Readability to your
+    codebase changes!
+
+    - A commit should do only one thing.
+    -- e.g. A commit that fixes a bug should only fix that bug.
+    - A new feature/fix, a new branch.
+    -- Every new feature or bug fix should be self-contained.
+
+** Third-party HTTP clients integration
+   WIP.
