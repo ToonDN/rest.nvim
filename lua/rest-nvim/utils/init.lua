@@ -107,6 +107,30 @@ M.get_file_variables = function()
   end
   return variables
 end
+
+-- Get the query based on the & variables
+M.get_query_string = function()
+  local query_param_strings = {}
+
+  -- If there is a line at the beginning with & first
+  if vim.fn.search("^&", "cn") > 0 then
+    -- Read all lines of the file
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, true)
+    for _, line in pairs(lines) do
+      if line:sub(1, 1) == "&" then
+        table.insert(query_param_strings, line:sub(2)) -- Remove the '&' and add to the table
+      end
+    end
+  end
+
+  -- Construct the query string
+  if #query_param_strings > 0 then
+    return "?" .. table.concat(query_param_strings, "&")
+  else
+    return "" -- Return an empty string if there are no query parameters
+  end
+end
+
 -- Gets the variables from the currently selected env_file
 M.get_env_variables = function()
   local variables = {}
@@ -249,8 +273,9 @@ M.replace_vars = function(str, vars)
     -- If the env variable wasn't found in the `.env` file or in the dynamic variables then search it
     -- in the OS environment variables
     if M.has_key(vars, var) then
+      local replace_var = var:gsub("%-", "%%-") -- Needed to use variables contain `-`
       str = type(vars[var]) == "function" and str:gsub("{{" .. var .. "}}", vars[var]())
-        or str:gsub("{{" .. var .. "}}", vars[var])
+        or str:gsub("{{" .. replace_var .. "}}", vars[var])
     else
       if os.getenv(var) then
         str = str:gsub("{{" .. var .. "}}", os.getenv(var))
@@ -266,12 +291,11 @@ end
 -- @param tbl Table to iterate over
 -- @param key The key to be searched in the table
 M.has_key = function(tbl, key)
-  for tbl_key, _ in pairs(tbl) do
-    if string.find(key, tbl_key) then
-      return true
-    end
+  if tbl[key] ~= nil then
+    return true
+  else
+    return false
   end
-  return false
 end
 
 -- has_value checks if the provided table contains the provided string using a regex
